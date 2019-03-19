@@ -46,9 +46,11 @@ import Data.Monoid
 import Data.Text (Text, unpack)
 import Data.Text.Encoding (decodeUtf8)
 import Data.Typeable
+import Network.HTTP.Media
 import Network.Wai
 import Network.Wai.Parse
 import Servant
+import Servant.Client.Core (HasClient (..), setRequestBodyLBS)
 import Servant.Docs
 import Servant.Foreign
 import Servant.Server.Internal
@@ -266,6 +268,67 @@ instance ( FromMultipart tag a
       multipartOpts = fromMaybe (defaultMultipartOptions pbak)
                     $ lookupContext popts config
       subserver' = addMultipartHandling pbak multipartOpts subserver
+
+class ToMultipart tag a where
+  toMultipart :: a -> MultipartData tag
+
+renderParts :: MultipartData tag -> LBS.ByteString
+renderParts = mempty
+
+-- renderPart :: BS.ByteString     -- ^ Boundary between parts.
+--            -> Part -> IO RequestBody
+-- renderPart boundary (Part name mfilename mcontenttype hdrs get) = liftM render get
+--   where render renderBody =
+--             cp "--" <> cp boundary <> cp "\r\n"
+--          <> cp "Content-Disposition: form-data; name=\""
+--          <> RequestBodyBS (TE.encodeUtf8 name)
+--          <> (case mfilename of
+--                  Just f -> cp "\"; filename=\""
+--                         <> RequestBodyBS (TE.encodeUtf8 $ pack $ takeFileName f)
+--                  _ -> mempty)
+--          <> cp "\""
+--          <> (case mcontenttype of
+--                 Just ct -> cp "\r\n"
+--                         <> cp "Content-Type: "
+--                         <> cp ct
+--                 _ -> mempty)
+--          <> Data.Foldable.foldMap (\(k, v) ->
+--                cp "\r\n"
+--             <> cp (CI.original k)
+--             <> cp ": "
+--             <> cp v) hdrs
+--          <> cp "\r\n\r\n"
+--          <> renderBody <> cp "\r\n"
+
+-- renderParts
+--   :: ByteString    -- ^ Boundary between parts.
+--   -> MultipartData tag -> ByteString
+-- renderParts boundary parts = (fin . mconcat) `liftM` mapM (renderPart boundary) parts
+--   where
+--     fin = (<> cp "--" <> cp boundary <> cp "--\r\n")
+
+instance (ToMultipart tag a, HasClient m api)
+  => HasClient m (MultipartForm tag a :> api) where
+
+  type Client m (MultipartForm tag a :> api) = a -> Client m api
+
+  clientWithRoute pm Proxy req body =
+    clientWithRoute pm (Proxy @api) $
+      setRequestBodyLBS
+        (renderParts (toMultipart @tag body))
+        ("multipart" // "form-data")
+        req
+    -- undefined
+    -- clientWithRoute pm (Proxy :: Proxy api)
+    --                 (let ctProxy = Proxy :: Proxy ct
+    --                  in setRequestBodyLBS (mimeRender ctProxy body)
+    --                                       -- We use first contentType from the Accept list
+    --                                       (contentType ctProxy)
+    --                                       req
+    --                 )
+
+  hoistClientMonad pm _ f cl = \a ->
+    hoistClientMonad pm (Proxy :: Proxy api) f (cl a)
 
 -- Try and extract the request body as multipart/form-data,
 -- returning the data as well as the resourcet InternalState
